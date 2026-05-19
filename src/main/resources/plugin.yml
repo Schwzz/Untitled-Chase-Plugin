@@ -1,0 +1,15 @@
+name: UntitledChaseGame
+main: com.untitledchasegame.UntitledChaseGame
+version: 1.0.0
+author: Swartzz
+api-version: 1.13
+description: A multiplayer chase mini-game plugin.
+commands:
+  ucg:
+    description: Main command for UntitledChaseGame
+    usage: /UCG <subcommand>
+    aliases: [UCG]
+permissions:
+  ucg.admin:
+    description: Access to admin commands
+    default: op

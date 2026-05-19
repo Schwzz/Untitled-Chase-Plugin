@@ -1,0 +1,15 @@
+# UntitledChaseGame Configuration
+
+# Maximum players allowed in a round (0 = unlimited)
+max-players: 0
+
+# Phase durations (in seconds)
+starting-duration: 60
+playing-duration: 300
+voting-duration: 30
+
+# Locations (set via /UCG set <type>)
+# Play areas are stored as: locations.play-area.<number>
+locations:
+  lobby: null
+  waiting-area: null
