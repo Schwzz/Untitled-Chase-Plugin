@@ -3,6 +3,9 @@
 # Maximum players allowed in a round (0 = unlimited)
 max-players: 0
 
+# Server identifier number (set via /UCG set server <number>)
+server-number: 0
+
 # Phase durations (in seconds)
 starting-duration: 60
 playing-duration: 300

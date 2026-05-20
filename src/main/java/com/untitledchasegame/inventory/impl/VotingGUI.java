@@ -1,10 +1,12 @@
 package com.untitledchasegame.inventory.impl;
 
 import com.untitledchasegame.GameManager;
+import com.untitledchasegame.LocationManager;
 import com.untitledchasegame.inventory.InventoryButton;
 import com.untitledchasegame.inventory.InventoryGUI;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
+import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.Inventory;
@@ -16,9 +18,11 @@ import java.util.Collections;
 public class VotingGUI extends InventoryGUI {
 
     private final GameManager gameManager;
+    private final LocationManager locationManager;
 
-    public VotingGUI(GameManager gameManager) {
+    public VotingGUI(GameManager gameManager, LocationManager locationManager) {
         this.gameManager = gameManager;
+        this.locationManager = locationManager;
     }
 
     @Override
@@ -43,6 +47,8 @@ public class VotingGUI extends InventoryGUI {
                 Player clicker = (Player) event.getWhoClicked();
                 gameManager.castVote(clicker, false);
                 clicker.closeInventory();
+                Location lobby = locationManager.getLobby();
+                if (lobby != null) clicker.teleport(lobby);
             })
         );
 

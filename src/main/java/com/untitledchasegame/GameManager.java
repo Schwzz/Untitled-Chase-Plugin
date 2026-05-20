@@ -191,7 +191,7 @@ public class GameManager {
 
         // Open voting GUI for all online players
         for (Player p : Bukkit.getOnlinePlayers()) {
-            VotingGUI gui = new VotingGUI(this);
+            VotingGUI gui = new VotingGUI(this, locationManager);
             plugin.getGuiManager().openGUI(gui, p);
         }
 
@@ -239,9 +239,9 @@ public class GameManager {
         scoreboardManager.removeAll();
 
         if (chasersWin) {
-            broadcast(ChatColor.RED + "[UCG] " + ChatColor.BOLD + "CHASERS WIN! All players have been tagged!");
+            broadcast(ChatColor.RED + "" + ChatColor.BOLD + "CHASERS WIN! All players have been caught.");
         } else {
-            broadcast(ChatColor.BLUE + "[UCG] " + ChatColor.BOLD + "RUNNERS WIN! Time ran out!");
+            broadcast(ChatColor.GREEN + "" + ChatColor.BOLD + "RUNNERS WIN! The survivors escaped.");
         }
 
         // Teleport participants to waiting area before voting
@@ -253,7 +253,8 @@ public class GameManager {
             }
         }
 
-        startVotingPhase();
+        // Delay voting phase by 3 seconds so players can read the win announcement
+        Bukkit.getScheduler().runTaskLater(plugin, this::startVotingPhase, 60L);
     }
 
     private void resetToIdle() {

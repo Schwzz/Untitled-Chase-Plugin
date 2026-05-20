@@ -34,6 +34,45 @@ public class LocationManager {
         saveLocation("play-area." + number, loc);
     }
 
+    public void setServerNumber(int number) {
+        plugin.getConfig().set("server-number", number);
+        plugin.saveConfig();
+    }
+
+    public int getServerNumber() {
+        return plugin.getConfig().getInt("server-number", -1);
+    }
+
+    public void resetLobby() {
+        this.lobby = null;
+        plugin.getConfig().set("locations.lobby", null);
+        plugin.saveConfig();
+    }
+
+    public void resetWaitingArea() {
+        this.waitingArea = null;
+        plugin.getConfig().set("locations.waiting-area", null);
+        plugin.saveConfig();
+    }
+
+    public void resetPlayAreas() {
+        plugin.getConfig().set("locations.play-area", null);
+        plugin.saveConfig();
+    }
+
+    public void resetServerNumber() {
+        plugin.getConfig().set("server-number", null);
+        plugin.saveConfig();
+    }
+
+    public void resetAll() {
+        this.lobby = null;
+        this.waitingArea = null;
+        plugin.getConfig().set("locations", null);
+        plugin.getConfig().set("server-number", null);
+        plugin.saveConfig();
+    }
+
     public Location getLobby() { return lobby; }
     public Location getWaitingArea() { return waitingArea; }
 

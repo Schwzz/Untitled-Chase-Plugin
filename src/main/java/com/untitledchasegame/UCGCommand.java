@@ -41,6 +41,7 @@ public class UCGCommand implements CommandExecutor, TabCompleter {
             case "force-start": return handleForceStart(sender);
             case "stop":        return handleStop(sender);
             case "set":         return handleSet(sender, args);
+            case "reset":       return handleReset(sender, args);
             case "testphase":   return handleTestPhase(sender, args);
             case "setmax":      return handleSetMax(sender, args);
             case "settimer":    return handleSetTimer(sender, args);
@@ -146,7 +147,7 @@ public class UCGCommand implements CommandExecutor, TabCompleter {
             return true;
         }
         if (args.length < 2) {
-            sender.sendMessage(ChatColor.RED + "Usage: /UCG set <Lobby|PlayArea <number>|WaitingArea>");
+            sender.sendMessage(ChatColor.RED + "Usage: /UCG set <Lobby|PlayArea <number>|WaitingArea|Server <number>>");
             return true;
         }
         Player player = (Player) sender;
@@ -175,8 +176,63 @@ public class UCGCommand implements CommandExecutor, TabCompleter {
                 locationManager.setWaitingArea(player.getLocation());
                 player.sendMessage(ChatColor.GREEN + "[UCG] Waiting area location set.");
                 break;
+            case "server":
+                if (args.length < 3) {
+                    player.sendMessage(ChatColor.RED + "Usage: /UCG set Server <number>");
+                    return true;
+                }
+                try {
+                    int number = Integer.parseInt(args[2]);
+                    if (number < 0) throw new NumberFormatException();
+                    locationManager.setServerNumber(number);
+                    player.sendMessage(ChatColor.GREEN + "[UCG] Server number set to " + number + ".");
+                } catch (NumberFormatException e) {
+                    player.sendMessage(ChatColor.RED + "Invalid number. Use a non-negative integer.");
+                }
+                break;
             default:
-                player.sendMessage(ChatColor.RED + "Unknown location type. Use: Lobby, PlayArea <number>, WaitingArea");
+                player.sendMessage(ChatColor.RED + "Unknown type. Use: Lobby, PlayArea <number>, WaitingArea, Server <number>");
+        }
+        return true;
+    }
+
+    private boolean handleReset(CommandSender sender, String[] args) {
+        if (!sender.hasPermission("ucg.admin")) {
+            sender.sendMessage(ChatColor.RED + "No permission.");
+            return true;
+        }
+        if (gameManager.getState() != GameState.IDLE) {
+            sender.sendMessage(ChatColor.RED + "[UCG] Cannot reset while a game is active.");
+            return true;
+        }
+        if (args.length < 2) {
+            sender.sendMessage(ChatColor.RED + "Usage: /UCG reset <all|lobby|playarea|waiting_area|server>");
+            return true;
+        }
+        switch (args[1].toLowerCase()) {
+            case "lobby":
+                locationManager.resetLobby();
+                sender.sendMessage(ChatColor.GREEN + "[UCG] Lobby location has been cleared.");
+                break;
+            case "waiting_area":
+            case "waitingarea":
+                locationManager.resetWaitingArea();
+                sender.sendMessage(ChatColor.GREEN + "[UCG] Waiting area location has been cleared.");
+                break;
+            case "playarea":
+                locationManager.resetPlayAreas();
+                sender.sendMessage(ChatColor.GREEN + "[UCG] All play area locations have been cleared.");
+                break;
+            case "server":
+                locationManager.resetServerNumber();
+                sender.sendMessage(ChatColor.GREEN + "[UCG] Server number has been cleared.");
+                break;
+            case "all":
+                locationManager.resetAll();
+                sender.sendMessage(ChatColor.GREEN + "[UCG] All locations and server data have been wiped.");
+                break;
+            default:
+                sender.sendMessage(ChatColor.RED + "Unknown target. Use: all, lobby, playarea, waiting_area, server");
         }
         return true;
     }
@@ -300,7 +356,8 @@ public class UCGCommand implements CommandExecutor, TabCompleter {
         if (sender.hasPermission("ucg.admin")) {
             sender.sendMessage(ChatColor.RED + "/UCG force-start " + ChatColor.WHITE + "- Skip countdown");
             sender.sendMessage(ChatColor.RED + "/UCG stop " + ChatColor.WHITE + "- Stop the game");
-            sender.sendMessage(ChatColor.RED + "/UCG set <Lobby|PlayArea <number>|WaitingArea> " + ChatColor.WHITE + "- Set a location");
+            sender.sendMessage(ChatColor.RED + "/UCG set <Lobby|PlayArea <number>|WaitingArea|Server <number>> " + ChatColor.WHITE + "- Set a location or server number");
+            sender.sendMessage(ChatColor.RED + "/UCG reset <all|lobby|playarea|waiting_area|server> " + ChatColor.WHITE + "- Clear saved data");
             sender.sendMessage(ChatColor.RED + "/UCG testphase <phase|stop> " + ChatColor.WHITE + "- Force a game phase");
             sender.sendMessage(ChatColor.RED + "/UCG setmax <number> " + ChatColor.WHITE + "- Set max players");
             sender.sendMessage(ChatColor.RED + "/UCG settimer <seconds> " + ChatColor.WHITE + "- Set remaining time");
@@ -314,7 +371,7 @@ public class UCGCommand implements CommandExecutor, TabCompleter {
         if (args.length == 1) {
             List<String> subs = new ArrayList<>(Arrays.asList("start", "join", "leave", "vote"));
             if (sender.hasPermission("ucg.admin")) {
-                subs.addAll(Arrays.asList("force-start", "stop", "set", "testphase", "setmax", "settimer", "setrole"));
+                subs.addAll(Arrays.asList("force-start", "stop", "set", "reset", "testphase", "setmax", "settimer", "setrole"));
             }
             for (String s : subs) {
                 if (s.startsWith(args[0].toLowerCase())) completions.add(s);
@@ -326,7 +383,11 @@ public class UCGCommand implements CommandExecutor, TabCompleter {
                     break;
                 case "set":
                     if (sender.hasPermission("ucg.admin"))
-                        completions.addAll(Arrays.asList("Lobby", "PlayArea", "WaitingArea"));
+                        completions.addAll(Arrays.asList("Lobby", "PlayArea", "WaitingArea", "Server"));
+                    break;
+                case "reset":
+                    if (sender.hasPermission("ucg.admin"))
+                        completions.addAll(Arrays.asList("all", "lobby", "playarea", "waiting_area", "server"));
                     break;
                 case "testphase":
                     if (sender.hasPermission("ucg.admin"))
