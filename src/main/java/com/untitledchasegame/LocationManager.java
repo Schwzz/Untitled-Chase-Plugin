@@ -34,6 +34,14 @@ public class LocationManager {
         saveLocation("play-area." + number, loc);
     }
 
+    public void setRunnerSpawn(int number, Location loc) {
+        saveLocation("play-area." + number + ".runner", loc);
+    }
+
+    public void setChaserSpawn(int number, Location loc) {
+        saveLocation("play-area." + number + ".chaser", loc);
+    }
+
     public void setServerNumber(int number) {
         plugin.getConfig().set("server-number", number);
         plugin.saveConfig();
@@ -88,6 +96,18 @@ public class LocationManager {
         if (keys.isEmpty()) return null;
         int chosen = keys.get(new Random().nextInt(keys.size()));
         return loadLocation("play-area." + chosen);
+    }
+
+    public Location getPlayArea(int number) {
+        return loadLocation("play-area." + number);
+    }
+
+    public Location getRunnerSpawn(int number) {
+        return loadLocation("play-area." + number + ".runner");
+    }
+
+    public Location getChaserSpawn(int number) {
+        return loadLocation("play-area." + number + ".chaser");
     }
 
     public List<Integer> getPlayAreaNumbers() {

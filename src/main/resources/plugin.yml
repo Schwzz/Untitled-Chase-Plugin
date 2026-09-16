@@ -13,3 +13,6 @@ permissions:
   ucg.admin:
     description: Access to admin commands
     default: op
+  ucg.stats:
+    description: View persistent chase-game statistics
+    default: true

@@ -1,8 +1,10 @@
 package com.untitledchasegame;
 
 import com.untitledchasegame.inventory.impl.VotingGUI;
+import com.untitledchasegame.inventory.impl.MapVotingGUI;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
+import org.bukkit.GameMode;
 import org.bukkit.Location;
 import org.bukkit.entity.Player;
 import org.bukkit.potion.PotionEffect;
@@ -17,18 +19,24 @@ public class GameManager {
     private final BossBarManager bossBarManager;
     private final ScoreboardManager scoreboardManager;
     private final LocationManager locationManager;
+    private final PlayerStatsManager playerStatsManager;
 
     private GameState state = GameState.IDLE;
 
     private final Set<UUID> participants = new HashSet<>();
     private final Set<UUID> optedOut = new HashSet<>();
+    private final Set<UUID> spectators = new HashSet<>();
     private final Map<UUID, PlayerRole> roles = new HashMap<>();
     private final Map<UUID, Boolean> votes = new HashMap<>();
+    private final Map<UUID, Integer> mapVotes = new HashMap<>();
+    private final Map<UUID, Long> tagCooldownUntil = new HashMap<>();
 
     private BukkitTask countdownTask;
+    private final Map<UUID, BukkitTask> reconnectTasks = new HashMap<>();
     private int timeLeft;
     private int maxPlayers = 0;
     private boolean testPhaseActive = false;
+    private boolean outcomeRecorded = false;
     // Tracks whether the 60-second glow reveal has already been applied this round
     private boolean glowRevealApplied = false;
 
@@ -37,6 +45,7 @@ public class GameManager {
         this.bossBarManager = plugin.getBossBarManager();
         this.scoreboardManager = plugin.getScoreboardManager();
         this.locationManager = plugin.getLocationManager();
+        this.playerStatsManager = plugin.getPlayerStatsManager();
         this.maxPlayers = plugin.getConfig().getInt("max-players", 0);
     }
 
@@ -49,6 +58,25 @@ public class GameManager {
     public int getMaxPlayers() { return maxPlayers; }
     public void setMaxPlayers(int max) { this.maxPlayers = max; }
 
+    public String getSetupValidationError() {
+        if (locationManager.getLobby() == null) {
+            return "[UCG] Cannot start: lobby is not configured. Use /UCG set Lobby.";
+        }
+        if (locationManager.getWaitingArea() == null) {
+            return "[UCG] Cannot start: waiting area is not configured. Use /UCG set WaitingArea.";
+        }
+        List<Integer> playAreas = locationManager.getPlayAreaNumbers();
+        if (playAreas.isEmpty()) {
+            return "[UCG] Cannot start: no play area is configured. Use /UCG set PlayArea <number>.";
+        }
+        for (int playArea : playAreas) {
+            if (locationManager.getPlayArea(playArea) == null) {
+                return "[UCG] Cannot start: play area #" + playArea + " is unavailable; its world may be unloaded.";
+            }
+        }
+        return null;
+    }
+
     // ─── Phase Transitions ────────────────────────────────────────────────────────
 
     public void startStartingPhase() {
@@ -58,7 +86,10 @@ public class GameManager {
         optedOut.clear();
         roles.clear();
         votes.clear();
+        tagCooldownUntil.clear();
+        mapVotes.clear();
         glowRevealApplied = false;
+        outcomeRecorded = false;
 
         for (Player p : Bukkit.getOnlinePlayers()) {
             participants.add(p.getUniqueId());
@@ -71,6 +102,13 @@ public class GameManager {
         Location waitingArea = locationManager.getWaitingArea();
         if (waitingArea != null) {
             for (Player p : Bukkit.getOnlinePlayers()) p.teleport(waitingArea);
+        }
+
+        if (!locationManager.getPlayAreaNumbers().isEmpty()) {
+            for (UUID uuid : participants) {
+                Player player = Bukkit.getPlayer(uuid);
+                if (player != null) plugin.getGuiManager().openGUI(new MapVotingGUI(this, locationManager), player);
+            }
         }
 
         broadcast(ChatColor.GOLD + "[UCG] " + ChatColor.YELLOW + "A Chase Game is starting in " + duration + " seconds! Use /UCG leave to opt out.");
@@ -97,29 +135,42 @@ public class GameManager {
             participants.addAll(list.subList(0, maxPlayers));
         }
 
-        if (participants.size() < 2) {
+        int minPlayers = plugin.getConfig().getInt("min-players", 2);
+        if (participants.size() < minPlayers) {
             broadcast(ChatColor.RED + "[UCG] Not enough players to start. Game cancelled.");
             resetToIdle();
             return;
         }
 
         state = GameState.PLAYING;
+        for (UUID uuid : participants) playerStatsManager.incrementGamesPlayed(uuid);
         roles.clear();
+        tagCooldownUntil.clear();
         glowRevealApplied = false;
 
         List<UUID> list = new ArrayList<>(participants);
         Collections.shuffle(list);
+        double chaserRatio = Math.max(0.0, Math.min(1.0, plugin.getConfig().getDouble("chaser-ratio", 0.20)));
+        int chaserCount = Math.max(1, Math.min(participants.size(), (int) Math.floor(participants.size() * chaserRatio)));
+        Set<UUID> chasers = new HashSet<>(list.subList(0, chaserCount));
         UUID chaserUUID = list.get(0);
         for (UUID id : participants) {
-            roles.put(id, id.equals(chaserUUID) ? PlayerRole.CHASER : PlayerRole.RUNNER);
+            roles.put(id, chasers.contains(id) ? PlayerRole.CHASER : PlayerRole.RUNNER);
         }
 
-        Location playArea = locationManager.getRandomPlayArea();
+        int playAreaNumber = getVotedPlayAreaNumber();
 
         for (UUID id : participants) {
             Player p = Bukkit.getPlayer(id);
             if (p == null) continue;
-            if (playArea != null) p.teleport(playArea);
+            Location spawn = null;
+            if (playAreaNumber >= 0) {
+                spawn = roles.get(id) == PlayerRole.CHASER
+                        ? locationManager.getChaserSpawn(playAreaNumber)
+                        : locationManager.getRunnerSpawn(playAreaNumber);
+                if (spawn == null) spawn = locationManager.getPlayArea(playAreaNumber);
+            }
+            if (spawn != null) p.teleport(spawn);
             // No glow at game start — clear any existing effects
             p.removePotionEffect(PotionEffectType.GLOWING);
             removeFromGlowTeams(p);
@@ -149,10 +200,10 @@ public class GameManager {
             updateBossBar();
             updateScoreboards();
 
-            // At exactly 60 seconds remaining, apply glow to all runners
-            if (timeLeft == 60 && !glowRevealApplied) {
+            int runnerRevealSeconds = Math.max(1, plugin.getConfig().getInt("runner-reveal-seconds", 60));
+            if (timeLeft == runnerRevealSeconds && !glowRevealApplied) {
                 glowRevealApplied = true;
-                broadcast(ChatColor.YELLOW + "[UCG] " + ChatColor.BOLD + "1 minute remaining! Runners are now visible!");
+                broadcast(ChatColor.YELLOW + "[UCG] " + ChatColor.BOLD + "Runners are now visible!");
                 for (UUID id : participants) {
                     Player p = Bukkit.getPlayer(id);
                     if (p == null) continue;
@@ -180,6 +231,8 @@ public class GameManager {
 
         int duration = plugin.getConfig().getInt("voting-duration", 30);
         timeLeft = duration;
+        updateVotingBossBar();
+        for (Player p : Bukkit.getOnlinePlayers()) bossBarManager.show(p);
 
         // Teleport all online players to waiting area
         Location waitingArea = locationManager.getWaitingArea();
@@ -200,18 +253,22 @@ public class GameManager {
             timeLeft--;
             if (timeLeft <= 0) {
                 resolveVote();
+            } else {
+                updateVotingBossBar();
             }
         }, 20L, 20L);
     }
 
     public void resolveVote() {
         cancelCountdown();
+        bossBarManager.hideAll();
         int yes = 0, no = 0;
         for (boolean v : votes.values()) {
             if (v) yes++; else no++;
         }
         broadcast(ChatColor.GOLD + "[UCG] " + ChatColor.YELLOW + "Vote results: YES=" + yes + " NO=" + no);
-        if (yes > no) {
+        int requiredYes = plugin.getConfig().getInt("restart-yes-threshold", 1);
+        if (yes >= requiredYes && yes > no) {
             broadcast(ChatColor.GREEN + "[UCG] Majority voted YES! Starting a new round...");
             resetToIdle();
             startStartingPhase();
@@ -233,7 +290,18 @@ public class GameManager {
     }
 
     private void endGame(boolean chasersWin) {
+        if (outcomeRecorded) return;
+        outcomeRecorded = true;
         cancelCountdown();
+        cancelReconnectTasks();
+        for (UUID uuid : participants) {
+            PlayerRole role = roles.get(uuid);
+            if (chasersWin && role == PlayerRole.CHASER) {
+                playerStatsManager.incrementChaserWins(uuid);
+            } else if (!chasersWin && role == PlayerRole.RUNNER) {
+                playerStatsManager.incrementRunnerEscapes(uuid);
+            }
+        }
         cleanupEffects();
         bossBarManager.hideAll();
         scoreboardManager.removeAll();
@@ -258,12 +326,17 @@ public class GameManager {
     }
 
     private void resetToIdle() {
+        cancelReconnectTasks();
         state = GameState.IDLE;
         participants.clear();
         optedOut.clear();
         roles.clear();
         votes.clear();
+        mapVotes.clear();
+        tagCooldownUntil.clear();
+        restoreSpectators();
         glowRevealApplied = false;
+        outcomeRecorded = false;
         testPhaseActive = false;
     }
 
@@ -274,6 +347,42 @@ public class GameManager {
     }
 
     // ─── Player Actions ───────────────────────────────────────────────────────────
+
+    public void handlePlayerJoin(Player player) {
+        UUID uuid = player.getUniqueId();
+        if (state == GameState.PLAYING && participants.contains(uuid) && reconnectTasks.containsKey(uuid)) {
+            BukkitTask task = reconnectTasks.remove(uuid);
+            if (task != null) task.cancel();
+
+            spectators.remove(uuid);
+            player.setGameMode(GameMode.SURVIVAL);
+            PlayerRole role = roles.get(uuid);
+            if (role != null) {
+                applyTeamColor(player, role);
+                if (glowRevealApplied && role == PlayerRole.RUNNER) {
+                    player.addPotionEffect(new PotionEffect(PotionEffectType.GLOWING, Integer.MAX_VALUE, 0, false, false));
+                }
+            }
+            bossBarManager.show(player);
+            updateScoreboards();
+            player.sendMessage(ChatColor.GREEN + "[UCG] You rejoined the active game and resumed your role.");
+            return;
+        }
+        participants.remove(uuid);
+        optedOut.add(uuid);
+
+        if (state == GameState.PLAYING) {
+            spectators.add(uuid);
+            player.setGameMode(GameMode.SPECTATOR);
+            return;
+        }
+
+        if (state == GameState.STARTING || state == GameState.VOTING) {
+            Location destination = locationManager.getWaitingArea();
+            if (destination == null) destination = locationManager.getLobby();
+            if (destination != null) player.teleport(destination);
+        }
+    }
 
     public boolean joinGame(Player player) {
         if (state != GameState.STARTING) return false;
@@ -312,14 +421,51 @@ public class GameManager {
             return;
         }
         votes.put(player.getUniqueId(), yes);
+        updateVotingBossBar();
         player.sendMessage(ChatColor.GREEN + "[UCG] Your vote has been recorded: " + (yes ? "YES" : "NO"));
+    }
+
+    public void castMapVote(Player player, int playAreaNumber) {
+        if (state != GameState.STARTING || !participants.contains(player.getUniqueId())
+                || !locationManager.getPlayAreaNumbers().contains(playAreaNumber)) return;
+
+        mapVotes.put(player.getUniqueId(), playAreaNumber);
+        player.sendMessage(ChatColor.GREEN + "[UCG] You voted for Play Area #" + playAreaNumber + ".");
+    }
+
+    public int getMapVoteCount(int playAreaNumber) {
+        return (int) mapVotes.values().stream().filter(number -> number == playAreaNumber).count();
+    }
+
+    private int getVotedPlayAreaNumber() {
+        List<Integer> playAreas = locationManager.getPlayAreaNumbers();
+        if (playAreas.isEmpty()) return -1;
+
+        int selected = playAreas.get(new Random().nextInt(playAreas.size()));
+        int highestVotes = -1;
+        for (int playArea : playAreas) {
+            int voteCount = getMapVoteCount(playArea);
+            if (voteCount > highestVotes) {
+                highestVotes = voteCount;
+                selected = playArea;
+            }
+        }
+        return selected;
     }
 
     // ─── Role Management ──────────────────────────────────────────────────────────
 
-    public void tagPlayer(Player runner) {
-        if (state != GameState.PLAYING) return;
+    public void tagPlayer(Player chaser, Player runner) {
+        if (state != GameState.PLAYING || roles.get(chaser.getUniqueId()) != PlayerRole.CHASER
+                || roles.get(runner.getUniqueId()) != PlayerRole.RUNNER) return;
+
+        long now = System.currentTimeMillis();
+        if (tagCooldownUntil.getOrDefault(chaser.getUniqueId(), 0L) > now) return;
+
+        playerStatsManager.incrementTags(chaser.getUniqueId());
         roles.put(runner.getUniqueId(), PlayerRole.CHASER);
+        long cooldownMillis = plugin.getConfig().getLong("tag-cooldown-seconds", 1L) * 1000L;
+        tagCooldownUntil.put(runner.getUniqueId(), now + cooldownMillis);
         // Remove glow from runner (they were glowing if reveal happened), apply chaser team color
         runner.removePotionEffect(PotionEffectType.GLOWING);
         applyTeamColor(runner, PlayerRole.CHASER);
@@ -350,9 +496,18 @@ public class GameManager {
     // ─── Disconnect Safety ────────────────────────────────────────────────────────
 
     public void handlePlayerLeave(UUID uuid) {
+        BukkitTask reconnectTask = reconnectTasks.remove(uuid);
+        if (reconnectTask != null) reconnectTask.cancel();
+        tagCooldownUntil.remove(uuid);
+        spectators.remove(uuid);
         if (state == GameState.PLAYING) {
             PlayerRole role = roles.remove(uuid);
             participants.remove(uuid);
+
+            if (roles.values().stream().noneMatch(r -> r == PlayerRole.RUNNER)) {
+                endGame(true);
+                return;
+            }
 
             if (participants.size() < 2) {
                 broadcast(ChatColor.RED + "[UCG] Not enough players remaining. Ending game.");
@@ -391,6 +546,30 @@ public class GameManager {
         }
     }
 
+    public void handlePlayerDisconnect(UUID uuid) {
+        if (state != GameState.PLAYING || !participants.contains(uuid)) {
+            handlePlayerLeave(uuid);
+            return;
+        }
+
+        BukkitTask oldTask = reconnectTasks.remove(uuid);
+        if (oldTask != null) oldTask.cancel();
+
+        long delay = plugin.getConfig().getLong("reconnect-grace-seconds", 30L);
+        if (delay <= 0L) {
+            handlePlayerLeave(uuid);
+            return;
+        }
+
+        BukkitTask task = Bukkit.getScheduler().runTaskLater(plugin, () -> {
+            reconnectTasks.remove(uuid);
+            if (state == GameState.PLAYING && Bukkit.getPlayer(uuid) == null) {
+                handlePlayerLeave(uuid);
+            }
+        }, delay * 20L);
+        reconnectTasks.put(uuid, task);
+    }
+
     // ─── Visual Effects ───────────────────────────────────────────────────────────
 
     // Applies scoreboard team color for glow outline without adding the glow potion
@@ -427,6 +606,15 @@ public class GameManager {
         org.bukkit.scoreboard.Team runner = board.getTeam("ucg_runner");
         if (chaser != null) chaser.unregister();
         if (runner != null) runner.unregister();
+        restoreSpectators();
+    }
+
+    private void restoreSpectators() {
+        for (UUID uuid : spectators) {
+            Player player = Bukkit.getPlayer(uuid);
+            if (player != null) player.setGameMode(GameMode.SURVIVAL);
+        }
+        spectators.clear();
     }
 
     // ─── Scoreboard & BossBar Updates ─────────────────────────────────────────────
@@ -457,6 +645,16 @@ public class GameManager {
         String title = ChatColor.YELLOW + "Game starting in " + ChatColor.WHITE + timeLeft + "s";
         bossBarManager.update(title, progress);
         for (Player p : Bukkit.getOnlinePlayers()) bossBarManager.show(p);
+    }
+
+    private void updateVotingBossBar() {
+        int duration = plugin.getConfig().getInt("voting-duration", 30);
+        int yes = (int) votes.values().stream().filter(vote -> vote).count();
+        int no = (int) votes.values().stream().filter(vote -> !vote).count();
+        String title = ChatColor.AQUA + "Play Again? " + ChatColor.GREEN + "YES: " + yes
+                + ChatColor.WHITE + " | " + ChatColor.RED + "NO: " + no
+                + ChatColor.WHITE + " — " + timeLeft + "s";
+        bossBarManager.update(title, duration <= 0 ? 0.0 : (double) timeLeft / duration);
     }
 
     // ─── Admin / Test Commands ────────────────────────────────────────────────────
@@ -521,6 +719,11 @@ public class GameManager {
             countdownTask.cancel();
             countdownTask = null;
         }
+    }
+
+    private void cancelReconnectTasks() {
+        for (BukkitTask task : reconnectTasks.values()) task.cancel();
+        reconnectTasks.clear();
     }
 
     private void broadcast(String message) {

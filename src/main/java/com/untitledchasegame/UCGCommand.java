@@ -2,6 +2,7 @@ package com.untitledchasegame;
 
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
+import org.bukkit.OfflinePlayer;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
@@ -17,11 +18,13 @@ public class UCGCommand implements CommandExecutor, TabCompleter {
     private final UntitledChaseGame plugin;
     private final GameManager gameManager;
     private final LocationManager locationManager;
+    private final PlayerStatsManager playerStatsManager;
 
     public UCGCommand(UntitledChaseGame plugin) {
         this.plugin = plugin;
         this.gameManager = plugin.getGameManager();
         this.locationManager = plugin.getLocationManager();
+        this.playerStatsManager = plugin.getPlayerStatsManager();
     }
 
     @Override
@@ -38,6 +41,7 @@ public class UCGCommand implements CommandExecutor, TabCompleter {
             case "join":        return handleJoin(sender);
             case "leave":       return handleLeave(sender);
             case "vote":        return handleVote(sender, args);
+            case "stats":       return handleStats(sender, args);
             case "force-start": return handleForceStart(sender);
             case "stop":        return handleStop(sender);
             case "set":         return handleSet(sender, args);
@@ -59,6 +63,11 @@ public class UCGCommand implements CommandExecutor, TabCompleter {
         }
         if (gameManager.getState() != GameState.IDLE) {
             sender.sendMessage(ChatColor.RED + "[UCG] A game is already in progress.");
+            return true;
+        }
+        String setupError = gameManager.getSetupValidationError();
+        if (setupError != null) {
+            sender.sendMessage(ChatColor.RED + setupError);
             return true;
         }
         gameManager.startStartingPhase();
@@ -110,6 +119,30 @@ public class UCGCommand implements CommandExecutor, TabCompleter {
         return true;
     }
 
+    private boolean handleStats(CommandSender sender, String[] args) {
+        if (!sender.hasPermission("ucg.stats")) {
+            sender.sendMessage(ChatColor.RED + "No permission.");
+            return true;
+        }
+        OfflinePlayer target;
+        if (args.length >= 2) {
+            target = Bukkit.getOfflinePlayer(args[1]);
+        } else if (sender instanceof Player) {
+            target = (Player) sender;
+        } else {
+            sender.sendMessage(ChatColor.RED + "Usage: /UCG stats <player>");
+            return true;
+        }
+
+        String name = target.getName() == null ? target.getUniqueId().toString() : target.getName();
+        sender.sendMessage(ChatColor.GOLD + "=== " + name + "'s UCG Stats ===");
+        sender.sendMessage(ChatColor.YELLOW + "Games Played: " + ChatColor.WHITE + playerStatsManager.getGamesPlayed(target.getUniqueId()));
+        sender.sendMessage(ChatColor.YELLOW + "Runner Escapes: " + ChatColor.WHITE + playerStatsManager.getRunnerEscapes(target.getUniqueId()));
+        sender.sendMessage(ChatColor.YELLOW + "Chaser Wins: " + ChatColor.WHITE + playerStatsManager.getChaserWins(target.getUniqueId()));
+        sender.sendMessage(ChatColor.YELLOW + "Tags: " + ChatColor.WHITE + playerStatsManager.getTags(target.getUniqueId()));
+        return true;
+    }
+
     private boolean handleForceStart(CommandSender sender) {
         if (!sender.hasPermission("ucg.admin")) {
             sender.sendMessage(ChatColor.RED + "No permission.");
@@ -147,7 +180,7 @@ public class UCGCommand implements CommandExecutor, TabCompleter {
             return true;
         }
         if (args.length < 2) {
-            sender.sendMessage(ChatColor.RED + "Usage: /UCG set <Lobby|PlayArea <number>|WaitingArea|Server <number>>");
+            sender.sendMessage(ChatColor.RED + "Usage: /UCG set <Lobby|PlayArea <number>|RunnerSpawn <number>|ChaserSpawn <number>|WaitingArea|Server <number>>");
             return true;
         }
         Player player = (Player) sender;
@@ -172,6 +205,26 @@ public class UCGCommand implements CommandExecutor, TabCompleter {
                     player.sendMessage(ChatColor.RED + "Invalid number. Use a positive integer (e.g. 1, 2, 3).");
                 }
                 break;
+            case "runnerspawn":
+            case "chaserspawn":
+                if (args.length < 3) {
+                    player.sendMessage(ChatColor.RED + "Usage: /UCG set " + (type.equals("runnerspawn") ? "RunnerSpawn" : "ChaserSpawn") + " <number>");
+                    return true;
+                }
+                try {
+                    int number = Integer.parseInt(args[2]);
+                    if (number < 1) throw new NumberFormatException();
+                    if (type.equals("runnerspawn")) {
+                        locationManager.setRunnerSpawn(number, player.getLocation());
+                        player.sendMessage(ChatColor.GREEN + "[UCG] Runner spawn for play area #" + number + " set.");
+                    } else {
+                        locationManager.setChaserSpawn(number, player.getLocation());
+                        player.sendMessage(ChatColor.GREEN + "[UCG] Chaser spawn for play area #" + number + " set.");
+                    }
+                } catch (NumberFormatException e) {
+                    player.sendMessage(ChatColor.RED + "Invalid number. Use a positive integer (e.g. 1, 2, 3).");
+                }
+                break;
             case "waitingarea":
                 locationManager.setWaitingArea(player.getLocation());
                 player.sendMessage(ChatColor.GREEN + "[UCG] Waiting area location set.");
@@ -191,7 +244,7 @@ public class UCGCommand implements CommandExecutor, TabCompleter {
                 }
                 break;
             default:
-                player.sendMessage(ChatColor.RED + "Unknown type. Use: Lobby, PlayArea <number>, WaitingArea, Server <number>");
+                player.sendMessage(ChatColor.RED + "Unknown type. Use: Lobby, PlayArea <number>, RunnerSpawn <number>, ChaserSpawn <number>, WaitingArea, Server <number>");
         }
         return true;
     }
@@ -353,10 +406,11 @@ public class UCGCommand implements CommandExecutor, TabCompleter {
         sender.sendMessage(ChatColor.YELLOW + "/UCG join " + ChatColor.WHITE + "- Join the upcoming round");
         sender.sendMessage(ChatColor.YELLOW + "/UCG leave " + ChatColor.WHITE + "- Leave the upcoming/current round");
         sender.sendMessage(ChatColor.YELLOW + "/UCG vote <yes|no> " + ChatColor.WHITE + "- Vote during voting phase");
+        sender.sendMessage(ChatColor.YELLOW + "/UCG stats [player] " + ChatColor.WHITE + "- View chase-game statistics");
         if (sender.hasPermission("ucg.admin")) {
             sender.sendMessage(ChatColor.RED + "/UCG force-start " + ChatColor.WHITE + "- Skip countdown");
             sender.sendMessage(ChatColor.RED + "/UCG stop " + ChatColor.WHITE + "- Stop the game");
-            sender.sendMessage(ChatColor.RED + "/UCG set <Lobby|PlayArea <number>|WaitingArea|Server <number>> " + ChatColor.WHITE + "- Set a location or server number");
+            sender.sendMessage(ChatColor.RED + "/UCG set <Lobby|PlayArea <number>|RunnerSpawn <number>|ChaserSpawn <number>|WaitingArea|Server <number>> " + ChatColor.WHITE + "- Set a location or server number");
             sender.sendMessage(ChatColor.RED + "/UCG reset <all|lobby|playarea|waiting_area|server> " + ChatColor.WHITE + "- Clear saved data");
             sender.sendMessage(ChatColor.RED + "/UCG testphase <phase|stop> " + ChatColor.WHITE + "- Force a game phase");
             sender.sendMessage(ChatColor.RED + "/UCG setmax <number> " + ChatColor.WHITE + "- Set max players");
@@ -369,7 +423,7 @@ public class UCGCommand implements CommandExecutor, TabCompleter {
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         List<String> completions = new ArrayList<>();
         if (args.length == 1) {
-            List<String> subs = new ArrayList<>(Arrays.asList("start", "join", "leave", "vote"));
+            List<String> subs = new ArrayList<>(Arrays.asList("start", "join", "leave", "vote", "stats"));
             if (sender.hasPermission("ucg.admin")) {
                 subs.addAll(Arrays.asList("force-start", "stop", "set", "reset", "testphase", "setmax", "settimer", "setrole"));
             }
@@ -383,7 +437,7 @@ public class UCGCommand implements CommandExecutor, TabCompleter {
                     break;
                 case "set":
                     if (sender.hasPermission("ucg.admin"))
-                        completions.addAll(Arrays.asList("Lobby", "PlayArea", "WaitingArea", "Server"));
+                        completions.addAll(Arrays.asList("Lobby", "PlayArea", "RunnerSpawn", "ChaserSpawn", "WaitingArea", "Server"));
                     break;
                 case "reset":
                     if (sender.hasPermission("ucg.admin"))
@@ -402,7 +456,9 @@ public class UCGCommand implements CommandExecutor, TabCompleter {
         } else if (args.length == 3) {
             if (args[0].equalsIgnoreCase("setrole") && sender.hasPermission("ucg.admin")) {
                 completions.addAll(Arrays.asList("chaser", "runner"));
-            } else if (args[0].equalsIgnoreCase("set") && args[1].equalsIgnoreCase("playarea") && sender.hasPermission("ucg.admin")) {
+            } else if (args[0].equalsIgnoreCase("set") && (args[1].equalsIgnoreCase("playarea")
+                    || args[1].equalsIgnoreCase("runnerspawn") || args[1].equalsIgnoreCase("chaserspawn"))
+                    && sender.hasPermission("ucg.admin")) {
                 // Suggest existing slot numbers plus the next available one
                 List<Integer> existing = locationManager.getPlayAreaNumbers();
                 int next = existing.isEmpty() ? 1 : existing.stream().mapToInt(i -> i).max().getAsInt() + 1;
